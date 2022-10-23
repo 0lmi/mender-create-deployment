@@ -1,4 +1,3 @@
-# action.yml
 name: 'Create Mender deployment'
 description: 'Create a deployment on a hosted Mender backend instance'
 inputs:
@@ -9,31 +8,46 @@ inputs:
     description: 'deployment name to be created'
     required: true
   mender_release_name:
-    description: 'mender artifacts release name'
+    description: 'Mender artifacts release name'
     required: true
   mender_devices_group:
     description: 'the name of the devices group to which the release will be deployed'
-    required: true
+    required: false
+  mender_devices_list:
+    description: 'the list of device ids to which the release will be deployed'
+    required: false
   mender_uri:
-    description: 'URI for the hosted Mender backend account to be used'
+    description: 'URI for the Mender server to be used'
     required: false
     default: 'https://hosted.mender.io'
 runs:
   using: "composite"
   steps:
-    - id: get_devices_list
+    - id: input_validation
+      shell: bash
       run: |
-        MENDER_DEVICES_LIST=$(curl -s \
-          -H "Authorization: Bearer ${{ inputs.mender_pat }}" \
-          ${{ inputs.mender_uri }}/api/management/v1/inventory/groups/${{ inputs.mender_devices_group }}/devices)
-        if [[ ${MENDER_DEVICES_LIST} != \[* ]]; then
-          echo "ERROR: failed to get devices list for group '${{ inputs.mender_devices_group }}'"
-          echo "Server's response: ${MENDER_DEVICES_LIST}"
+        if [[ -z "${{ inputs.mender_devices_group }}" && -z "${{ inputs.mender_devices_list }}" ]]; then
+          echo "ERROR: both mender_devices_group and mender_devices_list are empty, at least one is expected to be set"
           exit 1
         fi
-        echo "MENDER_DEVICES_LIST=${MENDER_DEVICES_LIST}" >> ${GITHUB_ENV}
+    - id: get_devices_list
       shell: bash
+      run: |
+        if [ ! -z ${{ inputs.mender_devices_group }} ]; then
+          MENDER_DEVICES_LIST=$(curl -s \
+            -H "Authorization: Bearer ${{ inputs.mender_pat }}" \
+            ${{ inputs.mender_uri }}/api/management/v1/inventory/groups/${{ inputs.mender_devices_group }}/devices)
+          if [[ ${MENDER_DEVICES_LIST} != \[* ]]; then
+            echo "ERROR: failed to get devices list for group '${{ inputs.mender_devices_group }}', server: ${{ inputs.mender_uri }}"
+            echo "Server's response: ${MENDER_DEVICES_LIST}"
+            exit 1
+          fi
+        else
+          MENDER_DEVICES_LIST=${{ inputs.mender_devices_list }}
+        fi
+        echo "MENDER_DEVICES_LIST=${MENDER_DEVICES_LIST}" >> ${GITHUB_ENV}
     - id: create_deployment
+      shell: bash
       run: |
         RESPONSE=$(curl -s -X POST ${{ inputs.mender_uri }}/api/management/v1/deployments/deployments \
           -H "Content-Type: application/json" \
@@ -41,9 +55,8 @@ runs:
           -H "Authorization: Bearer ${{ inputs.mender_pat }}" \
           --data-raw "{\"name\": \"${{ inputs.mender_deployment_name }}\", \"artifact_name\": \"${{ inputs.mender_release_name }}\", \"devices\": ${MENDER_DEVICES_LIST}}")
           if [[ ! -z "${RESPONSE}" || "${RESPONSE}" != "" ]]; then
-            echo "ERROR: failed to create deployment"
+            echo "ERROR: failed to create deployment '${{ inputs.mender_deployment_name }}', devices: ${MENDER_DEVICES_LIST}, server: ${{ inputs.mender_uri }}"
             echo "Server's response: ${RESPONSE}"
             exit 1
           fi
-          echo "INFO: deployment '${{ inputs.mender_deployment_name }}' with release '${{ inputs.mender_release_name }}' for device group '${{ inputs.mender_devices_group }}' successfully created"
-      shell: bash
+          echo "INFO: deployment '${{ inputs.mender_deployment_name }}' with release '${{ inputs.mender_release_name }}' for device group '${MENDER_DEVICES_LIST}' successfully created"
